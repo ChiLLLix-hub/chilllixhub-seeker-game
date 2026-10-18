@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>3D 5v1 Stealth Hide &amp; Seek: Relocation Lockdown</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#05060a;color:#fff;font-family:system-ui,sans-serif;touch-action:none;user-select:none}
+  #game{position:fixed;inset:0}
+  .hidden{display:none!important}
+  .tbtn{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.4);font-weight:700;font-size:12px}
+  .tbtn:active{background:rgba(255,255,255,.4)}
+  .dp{width:56px;height:56px;border-radius:12px;background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.4)}
+  .dp:active{background:rgba(255,255,255,.4)}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div class="fixed top-2 left-1/2 -translate-x-1/2 text-center pointer-events-none">
+    <div id="timer" class="text-3xl font-bold">5:00</div>
+    <div id="role" class="text-sm opacity-80"></div>
+  </div>
+  <div id="status" class="fixed top-16 left-1/2 -translate-x-1/2 text-center text-sm font-semibold pointer-events-none"></div>
+  <div id="wp" class="fixed top-24 left-1/2 -translate-x-1/2 text-center text-yellow-300 font-bold pointer-events-none"></div>
+  <div id="cd" class="fixed bottom-3 left-1/2 -translate-x-1/2 text-xs opacity-80 pointer-events-none"></div>
+  <div class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 border-2 border-white/70 rounded-full pointer-events-none"></div>
+  <div id="flash" class="fixed inset-0 pointer-events-none bg-white opacity-0"></div>
+</div>
+
+<!-- Touch controls -->
+<div id="touch" class="hidden">
+  <div class="fixed left-4 bottom-4 grid grid-cols-3 gap-1" style="touch-action:none">
+    <div></div><button class="dp" data-k="w"><i class="fa fa-arrow-up"></i></button><div></div>
+    <button class="dp" data-k="a"><i class="fa fa-arrow-left"></i></button><div></div><button class="dp" data-k="d"><i class="fa fa-arrow-right"></i></button>
+    <div></div><button class="dp" data-k="s"><i class="fa fa-arrow-down"></i></button><div></div>
+  </div>
+  <div id="lookpad" class="fixed right-0 top-0 w-1/2 h-2/3"></div>
+  <div class="fixed right-3 bottom-3 grid grid-cols-2 gap-2">
+    <button class="tbtn" data-a="jump">JUMP</button>
+    <button class="tbtn" data-a="fire" id="tfire"><i class="fa fa-crosshairs"></i></button>
+    <button class="tbtn" data-a="smoke" id="tsmk">SMK</button>
+    <button class="tbtn" data-a="decoy" id="tdec">DEC</button>
+  </div>
+</div>
+
+<!-- Menus -->
+<div id="menu" class="fixed inset-0 flex items-center justify-center bg-black/85 z-10">
+  <div class="max-w-md w-full p-6 text-center space-y-4">
+    <h1 class="text-3xl font-extrabold">🎮 5v1 Stealth Hide &amp; Seek</h1>
+    <h2 class="text-xl text-red-400 font-bold">Relocation Lockdown</h2>
+    <div class="space-x-2">
+      <label><input type="radio" name="role" value="hider" checked> Hider</label>
+      <label><input type="radio" name="role" value="seeker"> Seeker</label>
+    </div>
+    <button id="quick" class="w-full py-3 bg-red-600 hover:bg-red-500 rounded-lg font-bold">Quick Play (vs AI Bots)</button>
+    <div class="flex gap-2">
+      <input id="room" maxlength="6" placeholder="ROOM CODE" class="flex-1 px-3 py-2 rounded bg-white/10 uppercase text-center">
+      <button id="join" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded font-bold">Join / Create</button>
+    </div>
+    <div id="roomnote" class="text-xs text-gray-400"></div>
+    <div class="text-xs text-gray-400 text-left leading-relaxed">
+      WASD move · Mouse look · Space jump · Click fire tazer (Seeker) · E Smoke Bomb · Q Hologram Decoy (Hider) · ESC unlock cursor.<br>
+      Hider: stay still 2s to turn invisible; moving reveals you. Every 45s you get 20s to reach a waypoint or lose invisibility and get pinged. Survive 5 minutes.
+    </div>
+  </div>
+</div>
+<div id="end" class="fixed inset-0 hidden flex-col items-center justify-center bg-black/85 z-10 text-center space-y-4">
+  <div id="endtxt" class="text-4xl font-extrabold"></div>
+  <button id="again" class="px-6 py-3 bg-red-600 hover:bg-red-500 rounded-lg font-bold">Play Again</button>
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const ROUND = 300, RELOC_EVERY = 45, RELOC_TIME = 20, SEEKERS = 5;
+const SPEED = 6, HSPEED = 5.5, RAD = 0.5, EYE = 1.6, GRAV = 22, JUMP = 8;
+const MAP = 60;
+const isTouch = matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window;
+
+// ---------- Renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({canvas: $('game'), antialias: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e18);
+scene.fog = new THREE.Fog(0x0b0e18, 15, 70);
+const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 200);
+scene.add(camera);
+function resize(){ renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+scene.add(new THREE.AmbientLight(0x8890b0, 0.7));
+const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(20, 40, 10); scene.add(sun);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP*2, MAP*2), new THREE.MeshLambertMaterial({color: 0x2a3040}));
+floor.rotation.x = -Math.PI/2; scene.add(floor);
+scene.add(new THREE.GridHelper(MAP*2, 40, 0x445066, 0x303850));
+
+// ---------- Obstacles (AABB: x,z centre; w,d size; h height) ----------
+let obstacles = [];
+function addBox(x, z, w, d, h, color){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({color}));
+  m.position.set(x, h/2, z); scene.add(m);
+  obstacles.push({x, z, w, d, h, mesh: m});
+}
+function buildMap(){
+  obstacles.forEach(o => scene.remove(o.mesh)); obstacles = [];
+  const t = 2;
+  addBox(0, -MAP, MAP*2, t, 6, 0x555d73); addBox(0, MAP, MAP*2, t, 6, 0x555d73);
+  addBox(-MAP, 0, t, MAP*2, 6, 0x555d73); addBox(MAP, 0, t, MAP*2, 6, 0x555d73);
+  let seed = 1337; const rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 45; i++){
+    const x = (rnd()-0.5)*(MAP*2-12), z = (rnd()-0.5)*(MAP*2-12);
+    if (Math.hypot(x, z) < 6) continue;
+    const tall = rnd() > 0.35;
+    const w = 2 + rnd()*6, d = 2 + rnd()*6;
+    addBox(x, z, w, d, tall ? 4 : 1, tall ? 0x6b7a99 : 0x8a6d3b);
+  }
+}
+function collide(p, y){
+  for (const o of obstacles){
+    if (y >= o.h) continue;
+    const hx = o.w/2 + RAD, hz = o.d/2 + RAD;
+    const dx = p.x - o.x, dz = p.z - o.z;
+    if (Math.abs(dx) < hx && Math.abs(dz) < hz){
+      const px = hx - Math.abs(dx), pz = hz - Math.abs(dz);
+      if (px < pz) p.x += Math.sign(dx || 1) * px; else p.z += Math.sign(dz || 1) * pz;
+    }
+  }
+  p.x = Math.max(-MAP+RAD+1, Math.min(MAP-RAD-1, p.x));
+  p.z = Math.max(-MAP+RAD+1, Math.min(MAP-RAD-1, p.z));
+}
+function pointBlocked(x, z, y){
+  for (const o of obstacles)
+    if (y < o.h && Math.abs(x-o.x) < o.w/2 && Math.abs(z-o.z) < o.d/2) return true;
+  return false;
+}
+function los(a, b, ay=EYE, by=EYE){
+  const dx = b.x-a.x, dz = b.z-a.z, dist = Math.hypot(dx, dz), n = Math.ceil(dist/0.5);
+  for (let i = 1; i < n; i++){
+    const f = i/n;
+    if (pointBlocked(a.x+dx*f, a.z+dz*f, ay+(by-ay)*f)) return false;
+  }
+  return true;
+}
+function inSmoke(p){ return smokes.some(s => Math.hypot(p.x-s.x, p.z-s.z) < s.r); }
+function smokeBlocks(a, b){
+  return smokes.some(s => {
+    const dx=b.x-a.x, dz=b.z-a.z, l2=dx*dx+dz*dz||1;
+    let t=((s.x-a.x)*dx+(s.z-a.z)*dz)/l2; t=Math.max(0,Math.min(1,t));
+    return Math.hypot(a.x+dx*t-s.x, a.z+dz*t-s.z) < s.r;
+  });
+}
+
+// ---------- Entities ----------
+function makeBody(color){
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({color, transparent: true});
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 1.4, 12), mat); body.position.y = 0.7;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 12), mat); head.position.y = 1.65;
+  g.add(body, head); g.mat = mat; scene.add(g); return g;
+}
+let ents = [], player, hider, smokes = [], decoys = [], waypoint = null, pings = [];
+let state = 'menu', timeLeft = ROUND, relocTimer = RELOC_EVERY, wpTimer = 0, penalty = 0, msgT = 0;
+let humanRole = 'hider';
+
+function newEnt(role, isPlayer){
+  const e = {role, isPlayer, x: 0, z: 0, y: 0, vy: 0, yaw: 0, pitch: 0, still: 0, moving: false,
+    mesh: makeBody(role === 'hider' ? 0x33ff88 : 0xff4455), target: null, cool: 0, smokeCd: 0, decoyCd: 0,
+    think: 0, lastSeen: null, wander: 0};
+  return e;
+}
+function randSpot(){
+  for (let i = 0; i < 50; i++){
+    const x = (Math.random()-0.5)*(MAP*2-8), z = (Math.random()-0.5)*(MAP*2-8);
+    if (!pointBlocked(x, z, 0.5) && !pointBlocked(x+RAD, z+RAD, 0.5) && !pointBlocked(x-RAD, z-RAD, 0.5)) return {x, z};
+  }
+  return {x: 0, z: 0};
+}
+
+// ---------- Input ----------
+const keys = {}; let fireHeld = false, mouseLocked = false;
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (state !== 'play') return;
+  if (e.code === 'KeyE') useSmoke();
+  if (e.code === 'KeyQ') useDecoy();
+});
+addEventListener('keyup', e => keys[e.code] = false);
+document.addEventListener('pointerlockchange', () => mouseLocked = document.pointerLockElement === $('game'));
+addEventListener('mousemove', e => {
+  if (!mouseLocked || state !== 'play') return;
+  player.yaw -= e.movementX * 0.0022;
+  player.pitch = Math.max(-1.4, Math.min(1.4, player.pitch - e.movementY * 0.0022));
+});
+$('game').addEventListener('mousedown', e => {
+  if (state !== 'play' || isTouch) return;
+  if (!mouseLocked) { $('game').requestPointerLock && $('game').requestPointerLock(); return; }
+  if (e.button === 0) fire(player);
+});
+// touch
+const tk = {};
+document.querySelectorAll('.dp').forEach(b => {
+  const k = b.dataset.k;
+  b.addEventListener('touchstart', e => { e.preventDefault(); tk[k] = true; }, {passive: false});
+  const up = e => { e.preventDefault(); tk[k] = false; };
+  b.addEventListener('touchend', up); b.addEventListener('touchcancel', up);
+});
+document.querySelectorAll('.tbtn').forEach(b => b.addEventListener('touchstart', e => {
+  e.preventDefault(); if (state !== 'play') return;
+  const a = b.dataset.a;
+  if (a === 'jump') jump(player); else if (a === 'fire') fire(player);
+  else if (a === 'smoke') useSmoke(); else if (a === 'decoy') useDecoy();
+}, {passive: false}));
+let lastT = null;
+$('lookpad').addEventListener('touchstart', e => { lastT = e.changedTouches[0]; });
+$('lookpad').addEventListener('touchmove', e => {
+  e.preventDefault(); const t = e.changedTouches[0];
+  if (lastT && state === 'play'){
+    player.yaw -= (t.clientX - lastT.clientX) * 0.005;
+    player.pitch = Math.max(-1.4, Math.min(1.4, player.pitch - (t.clientY - lastT.clientY) * 0.005));
+  }
+  lastT = t;
+}, {passive: false});
+
+function jump(e){ if (e.y <= 0.001) e.vy = JUMP; }
+
+// ---------- Abilities ----------
+function flash(color, ms=120){ const f = $('flash'); f.style.background = color; f.style.opacity = .5; setTimeout(() => f.style.opacity = 0, ms); }
+function say(t, s=2.5){ $('status').textContent = t; msgT = s; }
+
+function useSmoke(e = player){
+  if (e.role !== 'hider' || e.smokeCd > 0) return;
+  e.smokeCd = 15;
+  const m = new THREE.Mesh(new THREE.SphereGeometry(4, 16, 16), new THREE.MeshLambertMaterial({color: 0xcccccc, transparent: true, opacity: 0.85}));
+  m.position.set(e.x, 2, e.z); scene.add(m);
+  smokes.push({x: e.x, z: e.z, r: 4, t: 8, mesh: m});
+  if (e.isPlayer) say('Smoke deployed');
+}
+function useDecoy(e = player){
+  if (e.role !== 'hider' || e.decoyCd > 0) return;
+  e.decoyCd = 15;
+  const m = makeBody(0x66ccff); m.mat.opacity = 0.7;
+  m.position.set(e.x + Math.sin(e.yaw)*-2, 0, e.z + Math.cos(e.yaw)*-2);
+  const d = {x: m.position.x, z: m.position.z, t: 12, mesh: m, dir: e.yaw};
+  decoys.push(d);
+  if (e.isPlayer) say('Decoy deployed');
+}
+
+const laserMat = new THREE.LineBasicMaterial({color: 0x44aaff});
+function fire(e){
+  if (e.role !== 'seeker' || e.cool > 0 || state !== 'play') return;
+  e.cool = 1.2;
+  const dir = new THREE.Vector3(-Math.sin(e.yaw)*Math.cos(e.pitch), Math.sin(e.pitch), -Math.cos(e.yaw)*Math.cos(e.pitch));
+  const origin = new THREE.Vector3(e.x, e.y + EYE, e.z);
+  const RANGE = 40; let hitDist = RANGE, target = null, kind = null;
+  // wall check
+  for (let d = 0.5; d < RANGE; d += 0.5){
+    const px = origin.x + dir.x*d, py = origin.y + dir.y*d, pz = origin.z + dir.z*d;
+    if (py < 0 || pointBlocked(px, pz, py)) { hitDist = d; break; }
+  }
+  const targets = [];
+  if (hider && hider.alive !== false) targets.push({o: hider, kind: 'hider', y: hider.y + 0.9});
+  decoys.forEach(d => targets.push({o: d, kind: 'decoy', y: 0.9}));
+  for (const t of targets){
+    const v = new THREE.Vector3(t.o.x, t.y, t.o.z).sub(origin);
+    const proj = v.dot(dir);
+    if (proj < 0 || proj > hitDist) continue;
+    if (v.clone().addScaledVector(dir, -proj).length() < 0.8 && !smokeBlocks(origin, t.o) ){
+      hitDist = proj; target = t; kind = t.kind;
+    }
+  }
+  const end = origin.clone().addScaledVector(dir, hitDist);
+  const start = origin.clone().addScaledVector(dir, 0.6); start.y -= 0.25;
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([start, end]), laserMat);
+  scene.add(line); setTimeout(() => scene.remove(line), 120);
+  if (e.isPlayer) flash('#44aaff', 80);
+  if (kind === 'decoy'){ scene.remove(target.o.mesh); decoys.splice(decoys.indexOf(target.o), 1); if (e.isPlayer) say('Hit a decoy!'); }
+  if (kind === 'hider') endGame('seekers');
+}
+
+// ---------- Setup / flow ----------
+function startGame(role){
+  humanRole = role;
+  ents.forEach(e => scene.remove(e.mesh));
+  smokes.forEach(s => scene.remove(s.mesh)); decoys.forEach(d => scene.remove(d.mesh));
+  smokes = []; decoys = []; pings.forEach(p => scene.remove(p.mesh)); pings = [];
+  if (waypoint){ scene.remove(waypoint.mesh); waypoint = null; }
+  buildMap();
+  ents = [];
+  hider = newEnt('hider', role === 'hider'); ents.push(hider);
+  for (let i = 0; i < SEEKERS; i++) ents.push(newEnt('seeker', role === 'seeker' && i === 0));
+  player = ents.find(e => e.isPlayer);
+  ents.forEach(e => { const s = randSpot(); e.x = s.x; e.z = s.z; });
+  hider.x = (Math.random()<.5?-1:1)*40; hider.z = (Math.random()<.5?-1:1)*40;
+  ents.forEach(e => { if (e.role === 'seeker'){ const a = Math.random()*6.28; e.x = Math.cos(a)*8; e.z = Math.sin(a)*8; } collide(e, 0); });
+  timeLeft = ROUND; relocTimer = RELOC_EVERY; wpTimer = 0; penalty = 0;
+  $('role').textContent = role === 'hider' ? 'You are the HIDER' : 'You are a SEEKER (5v1)';
+  ['tfire'].forEach(i => $(i).classList.toggle('hidden', role === 'hider'));
+  ['tsmk', 'tdec'].forEach(i => $(i).classList.toggle('hidden', role === 'seeker'));
+  $('menu').classList.add('hidden'); $('end').classList.add('hidden'); $('end').classList.remove('flex');
+  $('hud').classList.remove('hidden'); $('touch').classList.toggle('hidden', !isTouch);
+  state = 'play';
+  say(role === 'hider' ? 'Hide! Stand still to turn invisible.' : 'Find and tazer the Hider!', 4);
+  if (!isTouch) $('game').requestPointerLock && $('game').requestPointerLock();
+}
+function endGame(winner){
+  if (state !== 'play') return;
+  state = 'over';
+  document.exitPointerLock && document.exitPointerLock();
+  const youWin = (winner === 'hider') === (humanRole === 'hider');
+  $('endtxt').textContent = (winner === 'hider' ? 'Hider survived! ' : 'Hider tazed! ') + (youWin ? '🏆 You win' : '💀 You lose');
+  $('end').classList.remove('hidden'); $('end').classList.add('flex');
+}
+
+// ---------- Relocation ----------
+function spawnWaypoint(){
+  const s = randSpot();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 12, 24, 1, true), new THREE.MeshBasicMaterial({color: 0xffdd33, transparent: true, opacity: 0.35, side: THREE.DoubleSide}));
+  m.position.set(s.x, 6, s.z); scene.add(m);
+  waypoint = {x: s.x, z: s.z, mesh: m}; wpTimer = RELOC_TIME;
+}
+function clearWaypoint(){ if (waypoint){ scene.remove(waypoint.mesh); waypoint = null; } wpTimer = 0; }
+function failWaypoint(){
+  clearWaypoint(); penalty = 10;
+  if (hider.isPlayer) say('Relocation failed! Invisibility disabled', 4);
+  else say('Hider failed to relocate – position pinged!', 4);
+}
+
+// ---------- AI ----------
+function moveEnt(e, dx, dz, speed, dt){
+  const len = Math.hypot(dx, dz);
+  if (len > 0.001){ e.x += dx/len*speed*dt; e.z += dz/len*speed*dt; }
+  const ox = e.x, oz = e.z; collide(e, e.y);
+  return len > 0.001;
+}
+function steer(e, tx, tz, speed, dt){
+  const dx = tx-e.x, dz = tz-e.z; e.yaw = Math.atan2(-dx, -dz);
+  const bx = e.x, bz = e.z;
+  moveEnt(e, dx, dz, speed, dt);
+  // stuck handling: slide sideways
+  if (Math.hypot(e.x-bx, e.z-bz) < speed*dt*0.3){
+    e.stuck = (e.stuck||0) + dt;
+    if (e.stuck > 0.4){ const s = Math.sign(Math.sin(e.id||1)) || 1; moveEnt(e, -dz*s, dx*s, speed, dt*2); if (e.stuck > 1.2){ e.target = null; e.stuck = 0; } }
+  } else e.stuck = 0;
+}
+function aiHider(e, dt){
+  const target = waypoint && !e.isPlayer ? waypoint : null;
+  if (target){ steer(e, target.x, target.z, HSPEED, dt); e.moving = true; return; }
+  e.wander -= dt;
+  if (e.wander <= 0){
+    // alternate between sitting still and slipping to a new nook
+    if (Math.random() < 0.6){ e.target = null; e.wander = 4 + Math.random()*10; }
+    else { e.target = randSpot(); e.wander = 8; }
+  }
+  if (e.target){
+    steer(e, e.target.x, e.target.z, HSPEED*0.7, dt); e.moving = true;
+    if (Math.hypot(e.target.x-e.x, e.target.z-e.z) < 1) { e.target = null; e.wander = 0.1 + Math.random()*0.5; }
+  }
+  // flee from nearby seekers
+  for (const s of ents) if (s.role === 'seeker' && Math.hypot(s.x-e.x, s.z-e.z) < 8 && los(s, e)){
+    steer(e, e.x + (e.x-s.x), e.z + (e.z-s.z), HSPEED, dt); e.moving = true; break;
+  }
+}
+function canSee(e, t, dist){
+  const dx = t.x-e.x, dz = t.z-e.z, d = Math.hypot(dx, dz);
+  if (d > dist) return false;
+  const fwd = {x: -Math.sin(e.yaw), z: -Math.cos(e.yaw)};
+  if ((dx*fwd.x + dz*fwd.z)/(d||1) < 0.2 && d > 6) return false;
+  return los(e, t) && !smokeBlocks(e, t);
+}
+function aiSeeker(e, dt){
+  e.think -= dt;
+  const reveal = hiderVisibility() > 0.45 || (pings.length && penalty > 0);
+  let chase = null;
+  if (reveal && hider.alive !== false && canSee(e, hider, 35)) chase = hider;
+  else {
+    for (const d of decoys) if (canSee(e, d, 25)) { chase = d; break; }
+  }
+  if (!chase && penalty > 0) { e.lastSeen = {x: hider.x, z: hider.z}; }
+  if (chase){ e.lastSeen = {x: chase.x, z: chase.z}; e.target = null; }
+  if (e.lastSeen){
+    const d = Math.hypot(e.lastSeen.x-e.x, e.lastSeen.z-e.z);
+    if (chase && d < 25){
+      e.yaw = Math.atan2(-(chase.x-e.x), -(chase.z-e.z));
+      const eyeP = new THREE.Vector3(e.x, EYE, e.z);
+      e.pitch = Math.atan2((chase === hider ? 0.9 + (hider.y||0) : 0.9) - EYE, d);
+      if (Math.random() < dt*2) { fire(e); }
+      if (d > 8) steer(e, chase.x, chase.z, SPEED*0.9, dt);
+    } else if (d > 1.5) steer(e, e.lastSeen.x, e.lastSeen.z, SPEED*0.9, dt);
+    else e.lastSeen = null;
+    return;
+  }
+  if (!e.target || Math.hypot(e.target.x-e.x, e.target.z-e.z) < 2 || e.think < -12){ e.target = randSpot(); e.think = 0; }
+  steer(e, e.target.x, e.target.z, SPEED*0.7, dt);
+}
+
+// ---------- Visibility ----------
+function hiderVisibility(){
+  // 1 = fully visible, 0 = invisible (as seen by seekers)
+  if (penalty > 0 || hider.moving) return 1;
+  if (hider.still >= 2) return 0;
+  if (hider.still >= 1) return 0.0 + 0.01;
+  return hider.still >= 0 ? 0.5 : 1;
+}
+
+// ---------- Update ----------
+function update(dt){
+  if (state !== 'play') return;
+  timeLeft -= dt;
+  if (timeLeft <= 0) return endGame('hider');
+  // relocation scheduler
+  if (!waypoint){ relocTimer -= dt; if (relocTimer <= 0){ spawnWaypoint(); relocTimer = RELOC_EVERY; if (hider.isPlayer) say('RELOCATE to the waypoint!', 4); } }
+  else {
+    wpTimer -= dt;
+    waypoint.mesh.rotation.y += dt;
+    if (Math.hypot(hider.x-waypoint.x, hider.z-waypoint.z) < 2.5){ clearWaypoint(); if (hider.isPlayer) say('Relocation complete', 2); }
+    else if (wpTimer <= 0) failWaypoint();
+  }
+  if (penalty > 0){
+    penalty -= dt;
+    // map pings: periodic marker at hider position
+    if (Math.random() < dt*1.5){
+      const m = new THREE.Mesh(new THREE.RingGeometry(0.8, 1.2, 24), new THREE.MeshBasicMaterial({color: 0xff3333, side: THREE.DoubleSide, transparent: true}));
+      m.rotation.x = -Math.PI/2; m.position.set(hider.x, 0.05, hider.z); scene.add(m); pings.push({mesh: m, t: 2});
+    }
+  }
+  pings = pings.filter(p => { p.t -= dt; p.mesh.scale.setScalar(1 + (2-p.t)*2); p.mesh.material.opacity = Math.max(0, p.t/2);
+    if (p.t <= 0){ scene.remove(p.mesh); return false; } return true; });
+  smokes = smokes.filter(s => { s.t -= dt; if (s.t <= 0){ scene.remove(s.mesh); return false; } return true; });
+  decoys = decoys.filter(d => { d.t -= dt;
+    const nx = d.x - Math.sin(d.dir)*2*dt, nz = d.z - Math.cos(d.dir)*2*dt;
+    if (!pointBlocked(nx, nz, 0.5)){ d.x = nx; d.z = nz; d.mesh.position.set(nx, 0, nz); }
+    if (d.t <= 0){ scene.remove(d.mesh); return false; } return true; });
+
+  for (const e of ents){
+    e.cool = Math.max(0, e.cool - dt); e.smokeCd = Math.max(0, e.smokeCd - dt); e.decoyCd = Math.max(0, e.decoyCd - dt);
+    const px = e.x, pz = e.z;
+    if (e.isPlayer){
+      const f = (keys.KeyW || tk.w ? 1 : 0) - (keys.KeyS || tk.s ? 1 : 0);
+      const r = (keys.KeyD || tk.d ? 1 : 0) - (keys.KeyA || tk.a ? 1 : 0);
+      if (keys.Space) jump(e);
+      const sy = Math.sin(e.yaw), cy = Math.cos(e.yaw);
+      moveEnt(e, -sy*f + cy*r, -cy*f - sy*r, e.role === 'hider' ? HSPEED : SPEED, dt);
+    } else {
+      e.moving = false;
+      if (e.role === 'hider') aiHider(e, dt); else aiSeeker(e, dt);
+    }
+    // vertical
+    e.vy -= GRAV*dt; e.y = Math.max(0, e.y + e.vy*dt); if (e.y === 0) e.vy = 0;
+    const moved = Math.hypot(e.x-px, e.z-pz) > 0.2*dt;
+    e.moving = moved || e.y > 0;
+    if (e.moving) e.still = 0; else e.still += dt;
+    e.mesh.position.set(e.x, e.y, e.z); e.mesh.rotation.y = e.yaw;
+    if (e.role === 'hider'){
+      const v = hiderVisibility();
+      const a = e.isPlayer ? (v === 1 ? 1 : 0.3) : (hider.still >= 2 && penalty <= 0 ? 0 : (hider.still >= 1 && penalty <= 0 ? 0.01 : (penalty <= 0 && !hider.moving ? 0.5 : 1)));
+      e.mesh.mat.opacity = a; e.mesh.visible = a > 0.02;
+    }
+    if (e.isPlayer) e.mesh.visible = false;
+  }
+  // HUD
+  const m = Math.floor(timeLeft/60), s = Math.floor(timeLeft%60);
+  $('timer').textContent = m + ':' + String(s).padStart(2, '0');
+  $('wp').textContent = waypoint ? `Waypoint: ${Math.ceil(wpTimer)}s — ${Math.round(Math.hypot(hider.x-waypoint.x, hider.z-waypoint.z))}m` : '';
+  if (humanRole === 'seeker' && waypoint) $('wp').textContent = 'Hider is relocating…';
+  if (msgT > 0){ msgT -= dt; if (msgT <= 0) $('status').textContent = ''; }
+  if (humanRole === 'hider'){
+    const vis = penalty > 0 ? 'EXPOSED' : hider.moving ? 'VISIBLE (moving)' : hider.still >= 2 ? 'INVISIBLE' : hider.still >= 1 ? 'fading…' : 'half-visible';
+    $('cd').textContent = `${vis} | Smoke(E): ${e0(player.smokeCd)} | Decoy(Q): ${e0(player.decoyCd)}`;
+  } else $('cd').textContent = `Tazer: ${player.cool > 0 ? player.cool.toFixed(1)+'s' : 'READY'}` + (penalty > 0 ? ' | HIDER EXPOSED' : '');
+}
+const e0 = c => c > 0 ? Math.ceil(c)+'s' : 'ready';
+
+function render(){
+  if (player){
+    camera.position.set(player.x, player.y + EYE, player.z);
+    camera.rotation.order = 'YXZ'; camera.rotation.set(player.pitch, player.yaw, 0);
+  }
+  renderer.render(scene, camera);
+}
+let prev = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now-prev)/1000); prev = now;
+  update(dt); render(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- Menu wiring ----------
+const selRole = () => document.querySelector('input[name=role]:checked').value;
+$('quick').onclick = () => startGame(selRole());
+$('join').onclick = () => {
+  const c = $('room').value.trim().toUpperCase() || Math.random().toString(36).slice(2, 8).toUpperCase();
+  $('room').value = c;
+  $('roomnote').textContent = `Room ${c} ready. No game server is available, so remaining slots are filled with AI bots.`;
+  startGame(selRole());
+};
+$('again').onclick = () => { $('end').classList.add('hidden'); $('end').classList.remove('flex'); startGame(humanRole); };
+buildMap();
+// attract-mode camera
+camera.position.set(0, 30, 50); camera.lookAt(0, 0, 0);
+})();
+</script>
+</body>
+</html>
